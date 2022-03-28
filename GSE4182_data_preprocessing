@@ -1,0 +1,153 @@
+# Data pre-processing for NTD amniocyte microarray data from GSE4182 (available here: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE4182)
+
+# part 1 - analysis set up
+# part 2 - normalize & view distributions of all samples to identify any outliers/bad samples
+# part 3 - after exclusions of any outliers/bad samples, normalize the data and run the differential gene expression analysis
+# part 4 - annotate probesets with Entrez IDs
+
+
+############# part 1 ################
+
+#1. analysis set up 
+setwd("~/Desktop/NTD_AF_study_microarray_analysis/1_Microarray_data_preprocessing_DEG_R/geo_data/GSE4182")
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install(version = "3.12")
+library("GEOquery")
+library("affy")
+library("hgu133plus2.db")
+library("affycoretools")
+library("ggplot2")
+library("umap")
+library("maptools")
+
+############# part 2 ################
+
+#2. import CEL files & normalize using RMA (source: homer.ucsd.edu/homer/basicTutorial/affymetrix.html)
+data <- ReadAffy()
+gset <- rma(data)
+write.exprs(gset,file="data.txt")
+
+#3. generate EV distribution, box-and-whisker, and UMA plots
+
+# group membership for all samples
+gsms <- "100111000"
+sml <- strsplit(gsms, split="")[[1]]
+
+# assign samples to groups and set up design matrix
+gs <- factor(sml)
+groups <- make.names(c("control","case"))
+levels(gs) <- groups
+gset$group <- gs
+design <- model.matrix(~group + 0, gset)
+colnames(design) <- levels(gs)
+
+#ensure normalised data is in a matrix
+ex <- exprs(gset)
+
+# box-and-whisker plot
+ord <- order(gs)  # order samples by group
+palette(c("#bfbfbf", "#1D7F80"))
+par(mar=c(7,4,2,1))
+title <- paste ("GSE4182", "/", annotation(gset), sep ="")
+boxplot(ex[,ord], boxwex=0.6, notch=T, outline=FALSE, main=title, las=2, col=gs[ord], ylim=c(min=0,max=14))
+legend(NULL, groups, fill=palette(), bty="n")
+
+# expression value distribution
+library("limma")
+par(mar=c(4,4,2,1))
+title <- paste ("GSE4182", "/", annotation(gset), " value distribution", sep ="")
+plotDensities(ex, group=gs, main=title, width(3), legend = NA)
+
+# UMAP plot (dimensionality reduction)
+ex <- na.omit(ex) # eliminate rows with NAs
+ex <- ex[!duplicated(ex), ]  # remove duplicates
+ump <- umap(t(ex), n_neighbors = 4, random_state = 123)
+par(mar=c(3,3,2,6), xpd=TRUE)
+plot(ump$layout, main="UMAP plot, nbrs=4", xlab="", ylab="", col=gs, pch=20, cex=4, ylim=c(min=-3,max=3), xlim=c(min=-3,max=3))
+legend(NULL, inset=c(-0.15,0), legend=levels(gs), pch=20,
+       col=1:nlevels(gs), title="Group", pt.cex=1.5)
+
+############# part 3 ################
+
+#6. re-run steps 2 & 3, excluding outlier identified in part 2 (n=1)
+
+# GSE4182.outlier.removed = new working folder that does not contain the data for the outlier sample
+setwd("~/Desktop/NTD_AF_study_microarray_analysis/1_Microarray_data_preprocessing_DEG_R/geo_data/GSE4182.outlier.removed") 
+
+data.outlier.removed <- ReadAffy()
+gset2 <- rma(data.outlier.removed)
+write.exprs(gset2,file="data2.txt")
+
+#7. re-plot data
+
+# group membership for all samples
+gsms2 <- "10011000" #re-define goroup membership after removing the outlier
+sml2 <- strsplit(gsms2, split="")[[1]]
+
+# assign samples to groups and set up design matrix
+gs2 <- factor(sml2)
+groups <- make.names(c("control","case"))
+levels(gs2) <- groups
+gset2$group <- gs2
+design <- model.matrix(~group + 0, gset2)
+colnames(design) <- levels(gs2)
+
+#ensure normalised data is in a matrix
+ex2 <- exprs(gset2)
+
+# box-and-whisker plot
+ord2 <- order(gs2)  # order samples by group
+palette(c("#bfbfbf", "#1D7F80"))
+par(mar=c(7,4,2,1))
+title <- paste ("GSE4182", "/", annotation(gset2), sep ="")
+boxplot(ex2[,ord2], boxwex=0.6, notch=T, main=title, outline=FALSE, las=2, col=gs2[ord2], ylim=c(min=0,max=14))
+legend(NULL, groups, fill=palette(), bty="n")
+
+# expression value distribution
+par(mar=c(4,4,2,1))
+title <- paste ("GSE4182", "/", annotation(gset2), " value distribution", sep ="")
+plotDensities(ex2, group=gs2, main=title, legend = NA)
+
+# UMAP plot (dimensionality reduction)
+ex2 <- na.omit(ex2) # eliminate rows with NAs
+ex2 <- ex2[!duplicated(ex2), ]  # remove duplicates
+ump <- umap(t(ex2), n_neighbors = 4, random_state = 123)
+par(mar=c(3,3,2,6), xpd=TRUE)
+plot(ump$layout, main="UMAP plot, nbrs=4", xlab="", ylab="", col=gs2, pch=20, cex=4, ylim=c(min=-3,max=3), xlim=c(min=-3,max=3))
+legend(NULL, inset=c(-0.15,0), legend=levels(gs2), pch=20,
+       col=1:nlevels(gs2), title="Group", pt.cex=1.5)
+
+#8. with final sample set (excluding outlier), run differential expression analysis & generate a gene list
+
+# Differential expression analysis with limma
+library(limma)
+fit <- lmFit(gset2, design)  # fit linear model
+
+# set up contrasts (comparison order) of interest and recalculate model coefficients
+cts <- paste(groups[2], groups[1], sep="-") # order of 2, 1 ensures that FC shows difference in cases relative to controls (not vice versa)
+cont.matrix <- makeContrasts(contrasts=cts, levels=design)
+fit2 <- contrasts.fit(fit, cont.matrix)
+
+# compute statistics and table of top significant genes
+fit2 <- eBayes(fit2, 0.01)
+full_results<-topTable(fit2,number=length(rownames(gset2)),adjust.method="BH")
+filtered_list_adjpvalue<-subset(full_results, adj.P.Val<0.05) #gives gene expression output with significant q value (at q<.05)
+DEG_list<-subset(filtered_list_adjpvalue,abs(logFC)>2.0) #gives gene expression output with filtered FC expression changes (final DEG list)
+
+write.csv(full_results, file="NTD_AF_study_full_gene_list_limma.csv") #full list of genes sequenced by the microarray, cases vs. controls
+write.csv(DEG_list, file="NTD_AF_study_DEG.csv") #list of DEGs (abs FC>2, q<.05), cases vs. controls
+
+############# part 4 ################
+
+# annotate probeset IDs using Entrez IDs
+
+#annotation file was obtained from: https://www.thermofisher.com/order/catalog/product/900466#/900466
+#using a simple merge by probset IDs approach
+#manually re-labelled probeset ID columns as 'ID' in both annotation and DEG files to allow merging
+
+annotations<-read.csv("HG-U133_Plus_2.na36.annot.csv",head=T)
+DEG_list_IDcol_labelled<-read.csv("NTD_AF_study_DEG_IDcol_labelled.csv",head=T)
+
+write.csv(merge(annotations,DEG_list_IDcol_labelled,by=c('ID'),all.x=T), file="NTD_AF_study_DEG_final.csv") #list of DEGs with Entrez IDs
+
